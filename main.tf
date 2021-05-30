@@ -9,50 +9,50 @@ provider "aws" {
 resource "aws_security_group" "alb" {
   name   = var.sg_alb_name
   vpc_id = var.vpc_id
- 
+
   ingress {
-   protocol         = "tcp"
-   from_port        = 80
-   to_port          = 80
-   cidr_blocks      = ["0.0.0.0/0"]
-   ipv6_cidr_blocks = ["::/0"]
+    protocol         = "tcp"
+    from_port        = 80
+    to_port          = 80
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
- 
+
   ingress {
-   protocol         = "tcp"
-   from_port        = 443
-   to_port          = 443
-   cidr_blocks      = ["0.0.0.0/0"]
-   ipv6_cidr_blocks = ["::/0"]
+    protocol         = "tcp"
+    from_port        = 443
+    to_port          = 443
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
- 
+
   egress {
-   protocol         = "-1"
-   from_port        = 0
-   to_port          = 0
-   cidr_blocks      = ["0.0.0.0/0"]
-   ipv6_cidr_blocks = ["::/0"]
+    protocol         = "-1"
+    from_port        = 0
+    to_port          = 0
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 }
 
-resource "aws_security_group" "ecs_tasks" {
-  name   = var.sg_task_name
+resource "aws_security_group" "main" {
+  name   = var.sg_name
   vpc_id = var.vpc_id
- 
+
 
   ingress {
-   protocol         = "tcp"
-   from_port        = 0
-   to_port          = 65535
-   security_groups  = aws_security_group.alb.*.id
+    protocol        = "tcp"
+    from_port       = 0
+    to_port         = 65535
+    security_groups = aws_security_group.alb.*.id
   }
- 
+
   egress {
-   protocol         = "-1"
-   from_port        = 0
-   to_port          = 0
-   cidr_blocks      = ["0.0.0.0/0"]
-   ipv6_cidr_blocks = ["::/0"]
+    protocol         = "-1"
+    from_port        = 0
+    to_port          = 0
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 }
 
@@ -73,13 +73,13 @@ resource "aws_ecs_task_definition" "main" {
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
   container_definitions = jsonencode([{
-   name        = var.container_td_name
-   image       = var.container_image
-   memory      = 512
-   portMappings = [{
-     protocol      = "tcp"
-     containerPort = var.container_port
-     hostPort      = var.container_port
+    name   = var.container_td_name
+    image  = var.container_image
+    memory = 512
+    portMappings = [{
+      protocol      = "tcp"
+      containerPort = var.container_port
+      hostPort      = var.container_port
     }]
   }])
 }
@@ -94,29 +94,35 @@ resource "aws_lb" "main" {
   load_balancer_type = "application"
   security_groups    = aws_security_group.alb.*.id
   subnets            = var.subnets_lb
- 
+
   enable_deletion_protection = false
 }
- 
+
 resource "aws_alb_target_group" "main" {
-  name        = var.alb_target_group
+  name_prefix = "alb-tg"
   port        = 8080
   protocol    = "HTTP"
   vpc_id      = var.vpc_id
   target_type = "ip"
- 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   health_check {
-   matcher             = "200"
-   path                = "/"
+    path                = "/"
+    unhealthy_threshold = 10
+    timeout             = 60
+    interval            = 300
+    matcher             = "200,301,302"
   }
 }
 
 resource "aws_lb_listener" "web-listener" {
   load_balancer_arn = aws_lb.main.arn
-  port = "80"
-  protocol = "HTTP"
+  port              = "80"
+  protocol          = "HTTP"
   default_action {
-    type = "forward"
+    type             = "forward"
     target_group_arn = aws_alb_target_group.main.arn
   }
 }
@@ -126,27 +132,28 @@ resource "aws_lb_listener" "web-listener" {
 ################################################################################
 
 resource "aws_ecs_service" "main" {
- name                               = var.aws_ecs_service_name
- task_definition                    = aws_ecs_task_definition.main.arn
- cluster                            = aws_ecs_cluster.main.id
- desired_count                      = 2
- launch_type                        = "FARGATE"
- depends_on                         = [aws_lb_listener.web-listener]
- 
- network_configuration {
-   subnets            = var.subnets_lb
-   security_groups    = aws_security_group.alb.*.id
- }
+  name            = var.aws_ecs_service_name
+  task_definition = aws_ecs_task_definition.main.arn
+  cluster         = aws_ecs_cluster.main.id
+  desired_count   = 3
+  launch_type     = "FARGATE"
+  depends_on      = [aws_lb_listener.web-listener]
 
- load_balancer {
-   target_group_arn = aws_alb_target_group.main.arn
-   container_name   = var.container_td_name
-   container_port   = var.container_port
- }
- 
- lifecycle {
-   ignore_changes = [task_definition, desired_count]
- }
+  network_configuration {
+    subnets          = var.subnets_lb
+    security_groups  = aws_security_group.alb.*.id
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_alb_target_group.main.arn
+    container_name   = var.container_td_name
+    container_port   = var.container_port
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition, desired_count]
+  }
 }
 
 ################################################################################
@@ -171,9 +178,15 @@ resource "aws_iam_role" "ecs_task_role" {
   })
 }
 
+###added
+resource "aws_iam_role_policy_attachment" "ecs-task-role-policy-attachment" {
+  role       = aws_iam_role.ecs_task_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = var.ecs_task_executionRole
- 
+
   assume_role_policy = <<EOF
 {
  "Version": "2012-10-17",
@@ -190,3 +203,11 @@ resource "aws_iam_role" "ecs_task_execution_role" {
 }
 EOF
 }
+
+###added
+resource "aws_iam_role_policy_attachment" "ecs-task-execution-role-policy-attachment" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+
