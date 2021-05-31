@@ -69,13 +69,13 @@ resource "aws_ecs_task_definition" "main" {
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = 256
-  memory                   = 512
+  memory                   = 1024
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
   container_definitions = jsonencode([{
     name   = var.container_td_name
     image  = var.container_image
-    memory = 512
+    memory = 1024
     portMappings = [{
       protocol      = "tcp"
       containerPort = var.container_port
@@ -100,7 +100,7 @@ resource "aws_lb" "main" {
 
 resource "aws_alb_target_group" "main" {
   name_prefix = "alb-tg"
-  port        = 8080
+  port        = 80
   protocol    = "HTTP"
   vpc_id      = var.vpc_id
   target_type = "ip"
@@ -110,16 +110,18 @@ resource "aws_alb_target_group" "main" {
 
   health_check {
     path                = "/"
-    unhealthy_threshold = 10
-    timeout             = 60
-    interval            = 300
+    unhealthy_threshold = "3"
+    healthy_threshold   = "6"
+    timeout             = "10"
+    interval            = "30"
+    protocol            = "HTTP"
     matcher             = "200,301,302"
   }
 }
 
-resource "aws_lb_listener" "web-listener" {
+resource "aws_lb_listener" "web_listener" {
   load_balancer_arn = aws_lb.main.arn
-  port              = "80"
+  port              = 80
   protocol          = "HTTP"
   default_action {
     type             = "forward"
@@ -135,9 +137,9 @@ resource "aws_ecs_service" "main" {
   name            = var.aws_ecs_service_name
   task_definition = aws_ecs_task_definition.main.arn
   cluster         = aws_ecs_cluster.main.id
-  desired_count   = 3
+  desired_count   = 2
   launch_type     = "FARGATE"
-  depends_on      = [aws_lb_listener.web-listener]
+  depends_on      = [aws_alb_target_group.main]
 
   network_configuration {
     subnets          = var.subnets_lb
