@@ -1,58 +1,33 @@
 provider "aws" {
-  region = "us-east-2"
+  region = var.region
 }
 
 ################################################################################
 # Security Groups
 ################################################################################
 
-resource "aws_security_group" "alb" {
-  name   = var.sg_alb_name
-  vpc_id = var.vpc_id
-
-  ingress {
-    protocol         = "tcp"
-    from_port        = 80
-    to_port          = 80
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
-  }
-
-  ingress {
-    protocol         = "tcp"
-    from_port        = 443
-    to_port          = 443
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
-  }
-
-  egress {
-    protocol         = "-1"
-    from_port        = 0
-    to_port          = 0
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
-  }
-}
-
 resource "aws_security_group" "main" {
   name   = var.sg_name
   vpc_id = var.vpc_id
 
-
   ingress {
-    protocol        = "tcp"
-    from_port       = 0
-    to_port         = 65535
-    security_groups = aws_security_group.alb.*.id
+    protocol         = "tcp"
+    from_port        = var.container_port
+    to_port          = var.container_port
+    cidr_blocks      = var.cidr_blocks
+    ipv6_cidr_blocks = var.ipv6_cidr_blocks
   }
 
   egress {
     protocol         = "-1"
     from_port        = 0
     to_port          = 0
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
+    cidr_blocks      = var.cidr_blocks
+    ipv6_cidr_blocks = var.ipv6_cidr_blocks
+  }
+
+  tags = {
+    Name = var.sg_name
   }
 }
 
@@ -62,26 +37,35 @@ resource "aws_security_group" "main" {
 
 resource "aws_ecs_cluster" "main" {
   name = var.cluster_name
+
+  tags = {
+    Name = var.cluster_name
+  }
 }
 
 resource "aws_ecs_task_definition" "main" {
   family                   = var.td_name
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = 256
-  memory                   = 1024
+  network_mode             = var.network_mode
+  requires_compatibilities = var.requires_compatibilities
+  cpu                      = var.cpu
+  memory                   = var.memory
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
   container_definitions = jsonencode([{
-    name   = var.container_td_name
+    name   = var.container_name
     image  = var.container_image
-    memory = 1024
+    memory = var.memory
+    cpu    = var.cpu
     portMappings = [{
       protocol      = "tcp"
       containerPort = var.container_port
       hostPort      = var.container_port
     }]
   }])
+
+  tags = {
+    Name = var.td_name
+  }
 }
 
 ################################################################################
@@ -91,19 +75,24 @@ resource "aws_ecs_task_definition" "main" {
 resource "aws_lb" "main" {
   name               = var.lb_name
   internal           = false
-  load_balancer_type = "application"
-  security_groups    = aws_security_group.alb.*.id
+  load_balancer_type = var.load_balancer_type
+  security_groups    = aws_security_group.main.*.id
   subnets            = var.subnets_lb
 
   enable_deletion_protection = false
+
+  tags = {
+    Name = var.lb_name
+  }
 }
 
 resource "aws_alb_target_group" "main" {
-  name_prefix = "alb-tg"
+  name_prefix = "ALB-TG"
   port        = 80
   protocol    = "HTTP"
   vpc_id      = var.vpc_id
   target_type = "ip"
+  depends_on  = [aws_lb.main]
   lifecycle {
     create_before_destroy = true
   }
@@ -119,7 +108,7 @@ resource "aws_alb_target_group" "main" {
   }
 }
 
-resource "aws_lb_listener" "web_listener" {
+resource "aws_lb_listener" "web" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
@@ -134,22 +123,22 @@ resource "aws_lb_listener" "web_listener" {
 ################################################################################
 
 resource "aws_ecs_service" "main" {
-  name            = var.aws_ecs_service_name
+  name            = var.service_name
   task_definition = aws_ecs_task_definition.main.arn
   cluster         = aws_ecs_cluster.main.id
   desired_count   = 2
-  launch_type     = "FARGATE"
-  depends_on      = [aws_alb_target_group.main]
+  launch_type     = var.launch_type
+  # depends_on      = [aws_alb_target_group.main]
 
   network_configuration {
     subnets          = var.subnets_lb
-    security_groups  = aws_security_group.alb.*.id
+    security_groups  = aws_security_group.main.*.id
     assign_public_ip = true
   }
 
   load_balancer {
     target_group_arn = aws_alb_target_group.main.arn
-    container_name   = var.container_td_name
+    container_name   = var.container_name
     container_port   = var.container_port
   }
 
